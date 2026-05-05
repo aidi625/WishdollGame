@@ -2,6 +2,9 @@
 #include <conio.h>
 #include <windows.h>
 #include <stdio.h>
+#include <mmsystem.h>
+#pragma comment(lib, "winmm.lib")
+
 
 // =====================
 // 窗口与地面
@@ -22,18 +25,32 @@ int groundY[6] = {
 // =====================
 enum GameState
 {
-    MENU,
+    HOME,       // 首页
+    MENU,       // 角色选择页
+    INTRO,      // 游戏介绍页
     PLAYING,
     GAME_OVER
 };
 
-GameState gameState = MENU;
+GameState gameState = HOME;
 
 // =====================
 // 当前模式
 // =====================
 int mode = 1;
 int score = 0;
+
+// 当前这一局吃到的食物数量
+int foodCount = 0;
+
+// =====================
+// BGM 状态
+// =====================
+int currentBGM = 0;
+// 0：没有音乐
+// 1：首页音乐
+// 2：角色选择音乐
+// 3：游戏音乐
 
 // =====================
 // 角色
@@ -56,6 +73,8 @@ IMAGE menuBg;
 IMAGE modeBg[6];
 // 六个模式对应的障碍物图片
 IMAGE obstacleImgs[6];
+// 六个模式对应的食物图片
+IMAGE foodImgs[6];
 // =====================
 // 障碍物 1
 // =====================
@@ -74,6 +93,18 @@ int obstacle2W = 55;
 int obstacle2H = 55;
 bool useSecondObstacle = false;
 
+/// =====================
+// 空中食物：每组摆成弧线
+// =====================
+const int FOOD_COUNT = 5;
+
+int foodX[FOOD_COUNT];
+int foodY[FOOD_COUNT];
+bool foodVisible[FOOD_COUNT];
+
+int foodW = 38;
+int foodH = 38;
+
 // =====================
 // 护盾模式
 // =====================
@@ -84,6 +115,9 @@ bool hasShield = false;
 // =====================
 void loadRoleImages();
 void drawTransparentImage(int x, int y, IMAGE* img);
+void drawHome();
+void drawIntro();
+bool isMouseInRect(int mx, int my, int x1, int y1, int x2, int y2);
 void resetGame();
 void applyMode(int selectedMode);
 void drawMenu();
@@ -92,10 +126,92 @@ void updateGame();
 void handleInput();
 bool checkCollisionOne(int ox, int oy, int ow, int oh);
 void handleCollision();
+bool checkFoodCollision(int index);
+void resetFoods(int baseX);
+bool checkFoodCollision(int index);
+void playBGMByState();
+void stopAllBGM();
 
 
 
 
+
+
+void stopAllBGM()
+{
+    mciSendString(L"stop homeBGM", NULL, 0, NULL);
+    mciSendString(L"close homeBGM", NULL, 0, NULL);
+
+    mciSendString(L"stop menuBGM", NULL, 0, NULL);
+    mciSendString(L"close menuBGM", NULL, 0, NULL);
+
+    mciSendString(L"stop gameBGM", NULL, 0, NULL);
+    mciSendString(L"close gameBGM", NULL, 0, NULL);
+
+    currentBGM = 0;
+}
+
+void playBGMByState()
+{
+    if (gameState == HOME)
+    {
+        if (currentBGM != 1)
+        {
+            stopAllBGM();
+
+            mciSendString(
+                L"open \"C:\\Users\\lenovo\\Desktop\\Game\\Game\\sounds\\home_bgm.wav\" type waveaudio alias homeBGM",
+                NULL,
+                0,
+                NULL
+            );
+
+            mciSendString(L"play homeBGM", NULL, 0, NULL);
+            currentBGM = 1;
+        }
+    }
+    else if (gameState == MENU || gameState == INTRO)
+    {
+        if (currentBGM != 2)
+        {
+            stopAllBGM();
+
+            mciSendString(
+                L"open \"C:\\Users\\lenovo\\Desktop\\Game\\Game\\sounds\\menu_bgm.wav\" type waveaudio alias menuBGM",
+                NULL,
+                0,
+                NULL
+            );
+
+            mciSendString(L"play menuBGM", NULL, 0, NULL);
+            currentBGM = 2;
+        }
+    }
+    else if (gameState == PLAYING )
+    {
+        if (currentBGM != 3)
+        {
+            stopAllBGM();
+
+            mciSendString(
+                L"open \"C:\\Users\\lenovo\\Desktop\\Game\\Game\\sounds\\game_bgm.wav\" type waveaudio alias gameBGM",
+                NULL,
+                0,
+                NULL
+            );
+
+            mciSendString(L"play gameBGM", NULL, 0, NULL);
+            currentBGM = 3;
+        }
+    }
+    else if (gameState == GAME_OVER)
+    {
+        if (currentBGM != 0)
+        {
+            stopAllBGM();
+        }
+    }
+}
 
 // =====================
 // 加载 6 个角色图片
@@ -127,6 +243,14 @@ void loadRoleImages()
     loadimage(&obstacleImgs[3], L"images/obstacle4.png", 55, 55);
     loadimage(&obstacleImgs[4], L"images/obstacle5.png", 55, 55);
     loadimage(&obstacleImgs[5], L"images/obstacle6.png", 55, 55);
+
+    // 六个模式食物图片
+    loadimage(&foodImgs[0], L"images/food1.png", 45, 45);
+    loadimage(&foodImgs[1], L"images/food2.png", 45, 45);
+    loadimage(&foodImgs[2], L"images/food3.png", 45, 45);
+    loadimage(&foodImgs[3], L"images/food4.png", 45, 45);
+    loadimage(&foodImgs[4], L"images/food5.png", 45, 45);
+    loadimage(&foodImgs[5], L"images/food6.png", 45, 45);
 }
 
 
@@ -235,6 +359,36 @@ void applyMode(int selectedMode)
     }
 }
 
+// =====================
+// 生成一组弧线食物
+// baseX 表示这一组食物的起始 x 坐标
+// =====================
+void resetFoods(int baseX)
+{
+    int ground = groundY[mode - 1];
+
+    for (int i = 0; i < FOOD_COUNT; i++)
+    {
+        foodX[i] = baseX + i * 45;
+
+        // 弧线：中间高，两边低
+        if (i == 0 || i == 4)
+        {
+            foodY[i] = ground - 150;
+        }
+        else if (i == 1 || i == 3)
+        {
+            foodY[i] = ground - 185;
+        }
+        else
+        {
+            foodY[i] = ground - 210;
+        }
+
+        foodVisible[i] = true;
+    }
+}
+
 
 // =====================
 // 重新开始游戏
@@ -253,13 +407,78 @@ void resetGame()
     obstacleY = groundY[mode - 1] - obstacleH;
     obstacle2Y = groundY[mode - 1] - obstacle2H;
 
+    resetFoods(WIDTH + 120);
+
     score = 0;
 
-
+    foodCount = 0;
 
     gameState = PLAYING;
 }
 
+bool isMouseInRect(int mx, int my, int x1, int y1, int x2, int y2)
+{
+    return mx >= x1 && mx <= x2 && my >= y1 && my <= y2;
+}
+
+void drawHome()
+{
+    cleardevice();
+
+    // 首页背景，可以直接用封面背景
+    putimage(0, 0, &menuBg);
+
+    setbkmode(TRANSPARENT);
+
+    // 游戏标题
+    settextcolor(RGB(40, 40, 40));
+    settextstyle(48, 0, L"Comic Sans MS");
+    outtextxy(230, 80, L"WISH DOLL GAME");
+
+   
+
+    // 按钮 1：角色选择
+   
+
+    settextcolor(RGB(70, 45, 65));
+    settextstyle(30, 0, L"Comic Sans MS");
+    outtextxy(325, 210, L"MENU");
+
+    // 按钮 2：游戏介绍
+   
+    settextcolor(RGB(40, 60, 90));
+    settextstyle(30, 0, L"Comic Sans MS");
+    outtextxy(325, 290, L"How to Play");
+
+    settextstyle(16, 0, L"Comic Sans MS");
+    settextcolor(RGB(60, 60, 60));
+    outtextxy(285, 390, L"Click a button with left mouse button");
+}
+
+void drawIntro()
+{
+    cleardevice();
+
+    putimage(0, 0, &menuBg);
+    setbkmode(TRANSPARENT);
+
+    settextcolor(RGB(40, 40, 40));
+    settextstyle(42, 0, L"Comic Sans MS");
+    outtextxy(270, 45, L"How to Play");
+
+    settextstyle(22, 0, L"Comic Sans MS");
+    outtextxy(250, 130, L"1. Choose one of six characters.");
+    outtextxy(250, 170, L"2. Press SPACE to jump.");
+    outtextxy(250, 210, L"3. Avoid obstacles on the ground.");
+    outtextxy(250, 250, L"4. Collect floating food to get points.");
+    outtextxy(250, 290, L"5. Press R to restart, ESC to go back.");
+
+    // 返回按钮
+    
+    settextcolor(RGB(80, 50, 30));
+    settextstyle(26, 0, L"Comic Sans MS");
+    outtextxy(70, 390, L"Back");
+}
 
 // =====================
 // 绘制开始菜单
@@ -275,37 +494,36 @@ void drawMenu()
    
 
     settextcolor(BLACK);
-    settextstyle(38, 0, L"Comic Sans MS");
-    outtextxy(225, 30, L"WISH DOLL GAME");
+    settextstyle(48, 0, L"Comic Sans MS");
+    outtextxy(230, 80, L"WISH DOLL GAME");
 
-    settextstyle(22, 0, L"微软雅黑");
-    outtextxy(230, 90, L"按数字键 1~6 选择角色和模式");
+    settextstyle(16, 0, L"Comic Sans MS");
+    outtextxy(320, 390, L"Click a character to start");
 
     // 六张角色图片，使用粉色透明绘制
-    drawTransparentImage(80, 150, &roleImgs[0]);
-    drawTransparentImage(200, 150, &roleImgs[1]);
-    drawTransparentImage(320, 150, &roleImgs[2]);
-    drawTransparentImage(440, 150, &roleImgs[3]);
-    drawTransparentImage(560, 150, &roleImgs[4]);
-    drawTransparentImage(680, 150, &roleImgs[5]);
-
+    drawTransparentImage(60, 200, &roleImgs[0]);
+    drawTransparentImage(180, 200, &roleImgs[1]);
+    drawTransparentImage(310, 200, &roleImgs[2]);
+    drawTransparentImage(430, 200, &roleImgs[3]);
+    drawTransparentImage(550, 200, &roleImgs[4]);
+    drawTransparentImage(670, 200, &roleImgs[5]);
     settextstyle(18, 0, L"Comic Sans MS");
 
-    outtextxy(105, 240, L"1");
-    outtextxy(225, 240, L"2");
-    outtextxy(345, 240, L"3");
-    outtextxy(465, 240, L"4");
-    outtextxy(585, 240, L"5");
-    outtextxy(705, 240, L"6");
+    
 
-    outtextxy(55, 285, L"SIONING");
-    outtextxy(175, 285, L"KURI");
-    outtextxy(295, 285, L"BUBBLE NYANG");
-    outtextxy(415, 285, L"DANGTERI");
-    outtextxy(535, 285, L"RYONRYON");
-    outtextxy(655, 285, L"SAKUPANG");
+    outtextxy(70, 285, L"SIONING");
+    outtextxy(205, 285, L"KURI");
+    outtextxy(305, 285, L"BUBBLE NYANG");
+    outtextxy(440, 285, L"DANGTERI");
+    outtextxy(555, 285, L"RYONRYON");
+    outtextxy(675, 285, L"SAKUPANG");
 
-    outtextxy(230, 390, L"游戏中：空格跳跃，R重新开始，ESC返回菜单");
+   
+
+    // Back 返回首页
+    settextcolor(RGB(60, 60, 60));
+    settextstyle(24, 0, L"Comic Sans MS");
+    outtextxy(70, 390, L"Back");
 }
 
 
@@ -314,10 +532,32 @@ void drawMenu()
 // =====================
 bool checkCollisionOne(int ox, int oy, int ow, int oh)
 {
+
     if (playerX < ox + ow &&
         playerX + playerW > ox &&
         playerY < oy + oh &&
         playerY + playerH > oy)
+    {
+        return true;
+    }
+
+    return false;
+}
+
+// =====================
+// 食物碰撞检测
+// =====================
+bool checkFoodCollision(int index)
+{
+    if (!foodVisible[index])
+    {
+        return false;
+    }
+
+    if (playerX < foodX[index] + foodW &&
+        playerX + playerW > foodX[index] &&
+        playerY < foodY[index] + foodH &&
+        playerY + playerH > foodY[index])
     {
         return true;
     }
@@ -407,6 +647,28 @@ void updateGame()
         }
     }
 
+    
+    // =====================
+// 食物组移动与收集
+// =====================
+    for (int i = 0; i < FOOD_COUNT; i++)
+    {
+        foodX[i] -= obstacleSpeed;
+
+        if (checkFoodCollision(i))
+        {
+            score += 1;
+            foodCount += 1;
+            foodVisible[i] = false;
+        }
+    }
+
+    // 如果最后一个食物飞出屏幕左边，重新生成一组
+    if (foodX[FOOD_COUNT - 1] + foodW < 0)
+    {
+        resetFoods(WIDTH + 150);
+    }
+
     // 难度随分数增加
     if (score > 0 && score % 50 == 0)
     {
@@ -466,6 +728,17 @@ void drawGame()
         circle(playerX + playerW / 2 + 18, playerY + playerH / 2 - 5, 45);
     }
 
+    if (gameState == PLAYING)
+    {
+        for (int i = 0; i < FOOD_COUNT; i++)
+        {
+            if (foodVisible[i])
+            {
+                drawTransparentImage(foodX[i], foodY[i], &foodImgs[mode - 1]);
+            }
+        }
+    }
+    
     // 障碍物 1
     drawTransparentImage(obstacleX, obstacleY, &obstacleImgs[mode - 1]);
     // 障碍物 2
@@ -477,9 +750,19 @@ void drawGame()
     // 分数和模式
     settextstyle(22, 0, L"Comic Sans MS");
 
+    drawTransparentImage(20, 18, &foodImgs[mode - 1]);
+
+    wchar_t foodText[80];
+    swprintf_s(foodText, L"× %d", foodCount);
+
+    settextstyle(24, 0, L"Comic Sans MS");
+    outtextxy(65, 25, foodText);
+
     wchar_t scoreText[80];
-    swprintf_s(scoreText, L"分数：%d", score);
-    outtextxy(20, 20, scoreText);
+    swprintf_s(scoreText, L"Score: %d", score);
+
+    settextstyle(22, 0, L"Comic Sans MS");
+    outtextxy(20, 60, scoreText);
 
     wchar_t modeText[80];
 
@@ -508,26 +791,26 @@ void drawGame()
         swprintf_s(modeText, L"当前模式：SAKUPANG VER.");
     }
 
-    outtextxy(20, 50, modeText);
+    outtextxy(20, 90, modeText);
 
-    outtextxy(20, 80, L"空格跳跃，R重新开始，ESC返回菜单");
+    outtextxy(20, 120, L"空格跳跃");
 
     if (mode == 5)
     {
         if (hasShield)
         {
-            outtextxy(20, 110, L"护盾：可抵挡一次碰撞");
+            outtextxy(20, 150, L"护盾：可抵挡一次碰撞");
         }
         else
         {
-            outtextxy(20, 110, L"护盾：已使用");
+            outtextxy(20, 150, L"护盾：已使用");
         }
     }
 
     // 游戏结束界面
     if (gameState == GAME_OVER)
     {
-        settextstyle(40, 0, L"Comic Sans MS");
+        setbkmode(TRANSPARENT);
 
         if (mode == 6)
         {
@@ -538,10 +821,15 @@ void drawGame()
             settextcolor(BLACK);
         }
 
-        outtextxy(300, 170, L"GAME OVER");
+        settextstyle(44, 0, L"Comic Sans MS");
+        outtextxy(290, 165, L"GAME OVER");
 
-        settextstyle(24, 0, L"微软雅黑");
-        outtextxy(255, 230, L"按 R 重新开始，ESC返回菜单");
+        // 三个鼠标按钮：Restart / Home / Menu
+        settextstyle(24, 0, L"Comic Sans MS");
+
+        outtextxy(260, 240, L"Restart");
+        outtextxy(370, 240, L"Home");
+        outtextxy(460, 240, L"Menu");
     }
 }
 
@@ -551,56 +839,185 @@ void drawGame()
 // =====================
 void handleInput()
 {
-    // 菜单状态
+    // 首页：鼠标点击两个按钮
+    if (gameState == HOME)
+    {
+        ExMessage msg;
+
+        while (peekmessage(&msg, EM_MOUSE))
+        {
+            if (msg.message == WM_LBUTTONDOWN)
+            {
+                int mx = msg.x;
+                int my = msg.y;
+
+                // 点击 Character 按钮
+                if (isMouseInRect(mx, my, 280, 220, 520, 275))
+                {
+                    gameState = MENU;
+                    Sleep(150);
+                    return;
+                }
+
+                // 点击 How to Play 按钮
+                if (isMouseInRect(mx, my, 280, 305, 520, 360))
+                {
+                    gameState = INTRO;
+                    Sleep(150);
+                    return;
+                }
+            }
+        }
+
+        return;
+    }
+
+    // 游戏介绍页：鼠标点击 Back 按钮
+    if (gameState == INTRO)
+    {
+        ExMessage msg;
+
+        while (peekmessage(&msg, EM_MOUSE))
+        {
+            if (msg.message == WM_LBUTTONDOWN)
+            {
+                int mx = msg.x;
+                int my = msg.y;
+
+                // 点击左下角 Back 返回首页
+                if (isMouseInRect(mx, my, 60, 375, 150, 430))
+                {
+                    gameState = HOME;
+                    Sleep(150);
+                    return;
+                }
+            }
+        }
+
+        return;
+    }
+
+    // 游戏结束页：鼠标点击 Restart / Home / Menu
+    if (gameState == GAME_OVER)
+    {
+        ExMessage msg;
+
+        while (peekmessage(&msg, EM_MOUSE))
+        {
+            if (msg.message == WM_LBUTTONDOWN)
+            {
+                int mx = msg.x;
+                int my = msg.y;
+
+                // Restart：重新开始当前模式
+                if (isMouseInRect(mx, my, 250, 210, 350, 260))
+                {
+                    resetGame();
+                    Sleep(150);
+                    return;
+                }
+
+                // Home：返回首页
+                if (isMouseInRect(mx, my, 360, 210, 440, 260))
+                {
+                    gameState = HOME;
+                    Sleep(150);
+                    return;
+                }
+
+                // Menu：返回角色选择页
+                if (isMouseInRect(mx, my, 450, 210, 540, 260))
+                {
+                    gameState = MENU;
+                    Sleep(150);
+                    return;
+                }
+            }
+        }
+
+        return;
+    }
+
+    // 角色选择页：鼠标左键点击角色图片或文字选择
     if (gameState == MENU)
     {
-        if (GetAsyncKeyState('1') & 0x8000)
+        ExMessage msg;
+
+        while (peekmessage(&msg, EM_MOUSE))
         {
-            applyMode(1);
-            resetGame();
-            Sleep(150);
-        }
-        else if (GetAsyncKeyState('2') & 0x8000)
-        {
-            applyMode(2);
-            resetGame();
-            Sleep(150);
-        }
-        else if (GetAsyncKeyState('3') & 0x8000)
-        {
-            applyMode(3);
-            resetGame();
-            Sleep(150);
-        }
-        else if (GetAsyncKeyState('4') & 0x8000)
-        {
-            applyMode(4);
-            resetGame();
-            Sleep(150);
-        }
-        else if (GetAsyncKeyState('5') & 0x8000)
-        {
-            applyMode(5);
-            resetGame();
-            Sleep(150);
-        }
-        else if (GetAsyncKeyState('6') & 0x8000)
-        {
-            applyMode(6);
-            resetGame();
-            Sleep(150);
+            if (msg.message == WM_LBUTTONDOWN)
+            {
+                int mx = msg.x;
+                int my = msg.y;
+
+                // 点击角色 1：图片 + SIONING 文字
+                if (isMouseInRect(mx, my, 45, 140, 150, 315))
+                {
+                    applyMode(1);
+                    resetGame();
+                    Sleep(150);
+                    return;
+                }
+
+                // 点击角色 2：图片 + KURI 文字
+                if (isMouseInRect(mx, my, 165, 140, 270, 315))
+                {
+                    applyMode(2);
+                    resetGame();
+                    Sleep(150);
+                    return;
+                }
+
+                // 点击角色 3：图片 + BUBBLE NYANG 文字
+                if (isMouseInRect(mx, my, 285, 140, 420, 315))
+                {
+                    applyMode(3);
+                    resetGame();
+                    Sleep(150);
+                    return;
+                }
+
+                // 点击角色 4：图片 + DANGTERI 文字
+                if (isMouseInRect(mx, my, 415, 140, 530, 315))
+                {
+                    applyMode(4);
+                    resetGame();
+                    Sleep(150);
+                    return;
+                }
+
+                // 点击角色 5：图片 + RYONRYON 文字
+                if (isMouseInRect(mx, my, 535, 140, 650, 315))
+                {
+                    applyMode(5);
+                    resetGame();
+                    Sleep(150);
+                    return;
+                }
+
+                // 点击角色 6：图片 + SAKUPANG 文字
+                if (isMouseInRect(mx, my, 655, 140, 780, 315))
+                {
+                    applyMode(6);
+                    resetGame();
+                    Sleep(150);
+                    return;
+                }
+
+                // 点击 Back 返回首页
+                if (isMouseInRect(mx, my, 60, 375, 150, 430))
+                {
+                    gameState = HOME;
+                    Sleep(150);
+                    return;
+                }
+            }
         }
 
         return;
     }
 
-    // ESC 返回菜单
-    if (GetAsyncKeyState(VK_ESCAPE) & 0x8000)
-    {
-        gameState = MENU;
-        Sleep(150);
-        return;
-    }
+   
 
     // 空格跳跃
     if (GetAsyncKeyState(VK_SPACE) & 0x8000)
@@ -612,46 +1029,53 @@ void handleInput()
         }
     }
 
-    // R 重新开始
-    if (GetAsyncKeyState('R') & 0x8000)
-    {
-        resetGame();
-        Sleep(150);
-    }
+    
 }
+
 
 
 // =====================
 // 主函数
 // =====================
-int main()
-{
-    initgraph(WIDTH, HEIGHT);
-
-    loadRoleImages();
-
-    BeginBatchDraw();
-
-    while (true)
+    int main()
     {
-        handleInput();
+        initgraph(WIDTH, HEIGHT);
 
-        if (gameState == MENU)
+        loadRoleImages();
+        
+
+        BeginBatchDraw();
+
+        while (true)
         {
-            drawMenu();
-        }
-        else
-        {
-            updateGame();
-            drawGame();
+            handleInput();
+            playBGMByState();
+
+            if (gameState == HOME)
+            {
+                drawHome();
+            }
+            else if (gameState == INTRO)
+            {
+                drawIntro();
+            }
+            else if (gameState == MENU)
+            {
+                drawMenu();
+            }
+            else
+            {
+                updateGame();
+                drawGame();
+            }
+
+            FlushBatchDraw();
+            Sleep(16);
         }
 
-        FlushBatchDraw();
-        Sleep(16);
+        EndBatchDraw();
+        stopAllBGM();
+        closegraph();
+
+        return 0;
     }
-
-    EndBatchDraw();
-    closegraph();
-
-    return 0;
-}
